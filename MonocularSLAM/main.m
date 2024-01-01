@@ -380,3 +380,22 @@ while ~isLoopClosed && currFrameIdx < numel(imds.Files)
     addedFramesIdx  = [addedFramesIdx; currFrameIdx]; %#ok<AGROW>
     currFrameIdx    = currFrameIdx + 1;
 end % End of main loop
+
+if isLoopClosed
+    % Optimize the poses
+    minNumMatches      = 20;
+    vSetKeyFramesOptim = optimizePoses(vSetKeyFrames, minNumMatches, Tolerance=1e-16);
+
+    % Update map points after optimizing the poses
+    mapPointSet = helperUpdateGlobalMap(mapPointSet, vSetKeyFrames, vSetKeyFramesOptim);
+
+    updatePlot(mapPlot, vSetKeyFrames, mapPointSet);
+
+    % Plot the optimized camera trajectory
+    optimizedPoses  = poses(vSetKeyFramesOptim);
+    plotOptimizedTrajectory(mapPlot, optimizedPoses)
+
+    % Update legend
+    showLegend(mapPlot);
+end
+
