@@ -203,3 +203,180 @@ loopDatabase    = invertedImageIndex(bofData.bof,SaveFeatureLocations=false);
 addImageFeatures(loopDatabase, preFeatures, preViewId);
 addImageFeatures(loopDatabase, currFeatures, currViewId);
 
+% BUNDLE ADJUSTMENT
+
+% Run the full bundle-adjustment on the first two key-frames
+tracks      = findTracks(vSetKeyFrames);
+cameraPoses = poses(vSetKeyFrames);
+
+[refinedPoints, refinedAbsPoses] = bundleAdjustment(xyzWorldPoints, tracks, ...
+    cameraPoses, intrinsics, FixedViewIDs=1, ...
+    PointsUndistorted=true, AbsoluteTolerance=1e-7,...
+    RelativeTolerance=1e-15, MaxIteration=20, ...
+    Solver="preconditioned-conjugate-gradient");
+
+% Scale the map and the camera pose using the median depth of map points
+medianDepth   = median(vecnorm(refinedPoints.'));
+refinedPoints = refinedPoints / medianDepth;
+
+refinedAbsPoses.AbsolutePose(currViewId).Translation = ...
+    refinedAbsPoses.AbsolutePose(currViewId).Translation / medianDepth;
+relPose.Translation = relPose.Translation/medianDepth;
+
+% Update key frames with the refined poses
+vSetKeyFrames = updateView(vSetKeyFrames, refinedAbsPoses);
+vSetKeyFrames = updateConnection(vSetKeyFrames, preViewId, currViewId, relPose);
+
+% Update map points with the refined positions
+mapPointSet = updateWorldPoints(mapPointSet, newPointIdx, refinedPoints);
+
+% Update view direction and depth 
+mapPointSet = updateLimitsAndDirection(mapPointSet, newPointIdx, vSetKeyFrames.Views);
+
+% Update representative view
+mapPointSet = updateRepresentativeView(mapPointSet, newPointIdx, vSetKeyFrames.Views);
+
+% Visualize matched features in the current frame
+close(hfeature.Parent.Parent);
+featurePlot   = helperVisualizeMatchedFeatures(currI, currPoints(indexPairs(:,2)));
+
+% Visualize initial map points and camera trajectory
+mapPlot       = helperVisualizeMotionAndStructure(vSetKeyFrames, mapPointSet);
+
+% Show legend
+showLegend(mapPlot);
+
+% TRACKING
+
+% ViewId of the current key frame
+currKeyFrameId   = currViewId;
+
+% ViewId of the last key frame
+lastKeyFrameId   = currViewId;
+
+% Index of the last key frame in the input image sequence
+lastKeyFrameIdx  = currFrameIdx - 1; 
+
+% Indices of all the key frames in the input image sequence
+addedFramesIdx   = [1; lastKeyFrameIdx];
+
+isLoopClosed     = false;
+
+% Main loop
+isLastFrameKeyFrame = true;
+while ~isLoopClosed && currFrameIdx < numel(imds.Files)  
+    currI = readimage(imds, currFrameIdx);
+
+    [currFeatures, currPoints] = helperDetectAndExtractFeatures(currI, scaleFactor, numLevels, numPoints);
+
+    % Track the last key frame
+    % mapPointsIdx:   Indices of the map points observed in the current frame
+    % featureIdx:     Indices of the corresponding feature points in the 
+    %                 current frame
+    [currPose, mapPointsIdx, featureIdx] = helperTrackLastKeyFrame(mapPointSet, ...
+        vSetKeyFrames.Views, currFeatures, currPoints, lastKeyFrameId, intrinsics, scaleFactor);
+    
+    % Track the local map and check if the current frame is a key frame.
+    % A frame is a key frame if both of the following conditions are satisfied:
+    %
+    % 1. At least 20 frames have passed since the last key frame or the
+    %    current frame tracks fewer than 100 map points.
+    % 2. The map points tracked by the current frame are fewer than 90% of
+    %    points tracked by the reference key frame.
+    %
+    % Tracking performance is sensitive to the value of numPointsKeyFrame.  
+    % If tracking is lost, try a larger value.
+    %
+    % localKeyFrameIds:   ViewId of the connected key frames of the current frame
+    numSkipFrames     = 20;
+    numPointsKeyFrame = 80;
+    [localKeyFrameIds, currPose, mapPointsIdx, featureIdx, isKeyFrame] = ...
+        helperTrackLocalMap(mapPointSet, vSetKeyFrames, mapPointsIdx, ...
+        featureIdx, currPose, currFeatures, currPoints, intrinsics, scaleFactor, numLevels, ...
+        isLastFrameKeyFrame, lastKeyFrameIdx, currFrameIdx, numSkipFrames, numPointsKeyFrame);
+
+    % Visualize matched features
+    updatePlot(featurePlot, currI, currPoints(featureIdx));
+
+    if ~isKeyFrame
+        currFrameIdx        = currFrameIdx + 1;
+        isLastFrameKeyFrame = false;
+        continue
+    else
+        isLastFrameKeyFrame = true;
+    end
+
+    % Update current key frame ID
+    currKeyFrameId  = currKeyFrameId + 1;
+
+    % LOCAL MAPPING
+    
+    % Add the new key frame 
+    [mapPointSet, vSetKeyFrames] = helperAddNewKeyFrame(mapPointSet, vSetKeyFrames, ...
+        currPose, currFeatures, currPoints, mapPointsIdx, featureIdx, localKeyFrameIds);
+    
+    % Remove outlier map points that are observed in fewer than 3 key frames
+    outlierIdx    = setdiff(newPointIdx, mapPointsIdx);
+    if ~isempty(outlierIdx)
+        mapPointSet   = removeWorldPoints(mapPointSet, outlierIdx);
+    end
+    
+    % Create new map points by triangulation
+    minNumMatches = 10;
+    minParallax   = 3;
+    [mapPointSet, vSetKeyFrames, newPointIdx] = helperCreateNewMapPoints(mapPointSet, vSetKeyFrames, ...
+        currKeyFrameId, intrinsics, scaleFactor, minNumMatches, minParallax);
+    
+    % Local bundle adjustment
+    [refinedViews, dist] = connectedViews(vSetKeyFrames, currKeyFrameId, MaxDistance=2);
+    refinedKeyFrameIds = refinedViews.ViewId;
+    fixedViewIds = refinedKeyFrameIds(dist==2);
+    fixedViewIds = fixedViewIds(1:min(10, numel(fixedViewIds)));
+    
+    % Refine local key frames and map points
+    [mapPointSet, vSetKeyFrames, mapPointIdx] = bundleAdjustment(...
+        mapPointSet, vSetKeyFrames, [refinedKeyFrameIds; currKeyFrameId], intrinsics, ...
+        FixedViewIDs=fixedViewIds, PointsUndistorted=true, AbsoluteTolerance=1e-7,...
+        RelativeTolerance=1e-16, Solver="preconditioned-conjugate-gradient", ...
+        MaxIteration=10);
+    
+    % Update view direction and depth
+    mapPointSet = updateLimitsAndDirection(mapPointSet, mapPointIdx, vSetKeyFrames.Views);
+    
+    % Update representative view
+    mapPointSet = updateRepresentativeView(mapPointSet, mapPointIdx, vSetKeyFrames.Views);
+    
+    % Visualize 3D world points and camera trajectory
+    updatePlot(mapPlot, vSetKeyFrames, mapPointSet);
+    
+    % LOOP CLOSURE
+
+    % Check loop closure after some key frames have been created    
+    if currKeyFrameId > 20
+
+        % Minimum number of feature matches of loop edges
+        loopEdgeNumMatches = 50;
+
+        % Detect possible loop closure key frame candidates
+        [isDetected, validLoopCandidates] = helperCheckLoopClosure(vSetKeyFrames, currKeyFrameId, ...
+            loopDatabase, currI, loopEdgeNumMatches);
+
+        if isDetected 
+            % Add loop closure connections
+            [isLoopClosed, mapPointSet, vSetKeyFrames] = helperAddLoopConnections(...
+                mapPointSet, vSetKeyFrames, validLoopCandidates, currKeyFrameId, ...
+                currFeatures, loopEdgeNumMatches);
+        end
+    end
+
+    % If no loop closure is detected, add current features into the database
+    if ~isLoopClosed
+        addImageFeatures(loopDatabase,  currFeatures, currKeyFrameId);
+    end
+
+    % Update IDs and indices
+    lastKeyFrameId  = currKeyFrameId;
+    lastKeyFrameIdx = currFrameIdx;
+    addedFramesIdx  = [addedFramesIdx; currFrameIdx]; %#ok<AGROW>
+    currFrameIdx    = currFrameIdx + 1;
+end % End of main loop
