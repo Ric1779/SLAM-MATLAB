@@ -399,3 +399,12 @@ if isLoopClosed
     showLegend(mapPlot);
 end
 
+% Load ground truth 
+gTruthData = load("orbslamGroundTruth.mat");
+gTruth     = gTruthData.gTruth;
+
+% Plot the actual camera trajectory 
+plotActualTrajectory(mapPlot, gTruth(addedFramesIdx), optimizedPoses);
+
+% Show legend
+showLegend(mapPlot);
