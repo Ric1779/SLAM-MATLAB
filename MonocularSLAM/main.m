@@ -137,6 +137,7 @@ if isMapInitialized
     % Show matched features
     hfeature = showMatchedFeatures(firstI, currI, prePoints(indexPairs(:,1)), ...
         currPoints(indexPairs(:, 2)), "Montage");
+    saveas(hfeature, ".\images\matchedFeatures.png");
 else
     error('Unable to initialize the map.')
 end
@@ -239,10 +240,14 @@ mapPointSet = updateRepresentativeView(mapPointSet, newPointIdx, vSetKeyFrames.V
 % Visualize matched features in the current frame
 close(hfeature.Parent.Parent);
 featurePlot   = helperVisualizeMatchedFeatures(currI, currPoints(indexPairs(:,2)));
-
 % Visualize initial map points and camera trajectory
 mapPlot       = helperVisualizeMotionAndStructure(vSetKeyFrames, mapPointSet);
+% Save the figure
+file_name = '.\images\cameraPlot.png';
+saveas(mapPlot.Axes.Parent, file_name);
 
+% Display a message indicating that the figure has been saved
+disp(['Figure saved as: ' file_name]);
 % Show legend
 showLegend(mapPlot);
 
@@ -296,7 +301,7 @@ while ~isLoopClosed && currFrameIdx < numel(imds.Files)
         isLastFrameKeyFrame, lastKeyFrameIdx, currFrameIdx, numSkipFrames, numPointsKeyFrame);
 
     % Visualize matched features
-    updatePlot(featurePlot, currI, currPoints(featureIdx));
+    updatePlot(featurePlot, currI, currPoints(featureIdx), currFrameIdx);
 
     if ~isKeyFrame
         currFrameIdx        = currFrameIdx + 1;
@@ -390,10 +395,22 @@ if isLoopClosed
     mapPointSet = helperUpdateGlobalMap(mapPointSet, vSetKeyFrames, vSetKeyFramesOptim);
 
     updatePlot(mapPlot, vSetKeyFrames, mapPointSet);
+    % Save the figure
+    saveas(obj.hFig, file_name);
+    
+    % Display a message indicating that the figure has been saved
+    disp(['Figure saved as: ' file_name]);
 
     % Plot the optimized camera trajectory
     optimizedPoses  = poses(vSetKeyFramesOptim);
     plotOptimizedTrajectory(mapPlot, optimizedPoses)
+    
+    % Save the figure
+    file_name = '.\images\optimizedTrajectory.png'
+    saveas(obj.hFig, file_name);
+    
+    % Display a message indicating that the figure has been saved
+    disp(['Figure saved as: ' file_name]);
 
     % Update legend
     showLegend(mapPlot);
@@ -405,6 +422,14 @@ gTruth     = gTruthData.gTruth;
 
 % Plot the actual camera trajectory 
 plotActualTrajectory(mapPlot, gTruth(addedFramesIdx), optimizedPoses);
+% Save the figure
+file_name = '.\images\actualTrajectory.png'
+saveas(obj.hFig, file_name);
 
+% Display a message indicating that the figure has been saved
+disp(['Figure saved as: ' file_name]);
 % Show legend
 showLegend(mapPlot);
+
+% Evaluate tracking accuracy
+helperEstimateTrajectoryError(gTruth(addedFramesIdx), optimizedPoses);
